@@ -32,7 +32,7 @@ exports.registerUser = async (req, res) => {
     });
 
     res.status(201).json({
-      message: "Registered successfully",
+      message: "Token sent",
       setupToken,
     });
   } catch (err) {
@@ -199,14 +199,15 @@ exports.verifyTwoFA = async (req, res) => {
     const email = decoded.email;
 
     // Fetch the 2FA secret from DB
-    const user = await pool.query("SELECT * FROM users WHERE email = $1", [
-      email,
-    ]);
-    if (user.rows.length === 0) {
+    const userResult = await pool.query(
+      "SELECT twofa_secret FROM users WHERE email = $1",
+      [email]
+    );
+    if (userResult.rows.length === 0) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const base32secret = user.rows[0].twofa_secret;
+    const base32secret = userResult.rows[0].twofa_secret;
     const isVerified = speakeasy.totp.verify({
       secret: base32secret,
       encoding: "base32",
@@ -218,22 +219,31 @@ exports.verifyTwoFA = async (req, res) => {
       return res.status(401).json({ message: "Invalid 2FA code" });
     }
 
-    // Destroy previous session if exists
+    // Destroy any old session stored for this user
     const existingSessionId = await redisClient.get(`user_session:${email}`);
     if (existingSessionId) {
       await redisClient.del(`session:${existingSessionId}`);
     }
 
-    // Create new session
-    req.session.user = { email };
-    //Rate limit will reset properly after successful 2FA
-    await twoFALimiter.delete(req.ip);
-    req.session.save(async (err) => {
-      if (err)
-        return res.status(500).json({ message: "Failed to create session" });
+    // Regenerate the session to get a fresh session ID & cookie
+    req.session.regenerate(async (err) => {
+      if (err) {
+        console.error("Session regeneration error:", err);
+        return res
+          .status(500)
+          .json({ message: "Failed to regenerate session" });
+      }
 
+      // Now store the authenticated user
+      req.session.user = { email };
+
+      // Clear rate-limiter for 2FA
+      await twoFALimiter.delete(req.ip);
+
+      // Persist the new session ID in Redis so we can enforce "one session per user"
       await redisClient.set(`user_session:${email}`, req.sessionID);
 
+      // Express-session will automatically emit Set-Cookie here
       res.status(200).json({
         message: "2FA verified successfully",
         redirectTo: "/dashboard",
