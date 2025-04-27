@@ -189,6 +189,7 @@ exports.verifyMagicLink = async (req, res) => {
  * @route POST /api/auth/verify2FA
  */
 exports.verifyTwoFA = async (req, res) => {
+  console.log("verifyTwoFA called for token:", req.body.token);
   const { token, code } = req.body;
   if (!token || !code) {
     return res.status(400).json({ message: "Missing token or 2FA code" });
@@ -233,6 +234,7 @@ exports.verifyTwoFA = async (req, res) => {
           .status(500)
           .json({ message: "Failed to regenerate session" });
       }
+      console.log("Session regenerated, new ID:", req.sessionID);
 
       // Now store the authenticated user
       req.session.user = { email };
@@ -242,6 +244,7 @@ exports.verifyTwoFA = async (req, res) => {
 
       // Persist the new session ID in Redis so we can enforce "one session per user"
       await redisClient.set(`user_session:${email}`, req.sessionID);
+      console.log("About to send JSON and Set-Cookie");
 
       // Express-session will automatically emit Set-Cookie here
       res.status(200).json({
